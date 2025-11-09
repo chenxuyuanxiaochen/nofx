@@ -1,11 +1,13 @@
 package api
 
 import (
-	"log"
-	"net/http"
-	"nofx/crypto"
+    "encoding/base64"
+    "encoding/json"
+    "log"
+    "net/http"
+    "nofx/crypto"
 
-	"github.com/gin-gonic/gin"
+    "github.com/gin-gonic/gin"
 )
 
 // CryptoHandler 加密 API 處理器
@@ -36,19 +38,46 @@ func (h *CryptoHandler) HandleGetPublicKey(c *gin.Context) {
 
 // HandleDecryptSensitiveData 解密客戶端傳送的加密数据
 func (h *CryptoHandler) HandleDecryptSensitiveData(c *gin.Context) {
-	var payload crypto.EncryptedPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
+    var payload crypto.EncryptedPayload
+    if err := c.ShouldBindJSON(&payload); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+        return
+    }
 
-	// 解密
-	decrypted, err := h.cryptoService.DecryptSensitiveData(&payload)
-	if err != nil {
-		log.Printf("❌ 解密失敗: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Decryption failed"})
-		return
-	}
+    // 仅允许已认证用户调用
+    userID := c.GetString("user_id")
+    if userID == "" {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "未认证或缺少用户信息"})
+        return
+    }
+
+    // 强制校验 AAD（必须包含且 userId 必须匹配当前用户）
+    if payload.AAD == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "缺少AAD，拒绝解密"})
+        return
+    }
+    aadBytes, err := base64.RawURLEncoding.DecodeString(payload.AAD)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "AAD格式错误"})
+        return
+    }
+    var aadData crypto.AADData
+    if err := json.Unmarshal(aadBytes, &aadData); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "AAD解析失败"})
+        return
+    }
+    if aadData.UserID == "" || aadData.UserID != userID {
+        c.JSON(http.StatusForbidden, gin.H{"error": "AAD用户不匹配，拒绝解密"})
+        return
+    }
+
+    // 解密
+    decrypted, err := h.cryptoService.DecryptSensitiveData(&payload)
+    if err != nil {
+        log.Printf("❌ 解密失敗: %v", err)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Decryption failed"})
+        return
+    }
 
 	c.JSON(http.StatusOK, map[string]string{
 		"plaintext": decrypted,

@@ -1,23 +1,24 @@
 package api
 
 import (
-	"encoding/json"
-	"fmt"
-	"log"
-	"net"
-	"net/http"
-	"nofx/auth"
-	"nofx/config"
-	"nofx/crypto"
-	"nofx/decision"
-	"nofx/manager"
-	"nofx/trader"
-	"strconv"
-	"strings"
-	"time"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net"
+    "net/http"
+    "nofx/auth"
+    "nofx/config"
+    "nofx/crypto"
+    "nofx/decision"
+    "nofx/manager"
+    "nofx/trader"
+    "strconv"
+    "strings"
+    "time"
+    "sync"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+    "github.com/gin-gonic/gin"
+    "github.com/google/uuid"
 )
 
 // Server HTTP API服务器
@@ -72,6 +73,40 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
+// 简单的IP+路径限流中间件（内存）
+var (
+    rlMu    sync.Mutex
+    rlStore = make(map[string][]time.Time)
+)
+
+func rateLimitMiddleware(max int, window time.Duration) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        key := c.FullPath() + "|" + c.ClientIP()
+        now := time.Now()
+
+        rlMu.Lock()
+        timestamps := rlStore[key]
+        // 滤除窗口外的时间戳
+        filtered := make([]time.Time, 0, len(timestamps))
+        for _, t := range timestamps {
+            if now.Sub(t) < window {
+                filtered = append(filtered, t)
+            }
+        }
+        if len(filtered) >= max {
+            rlMu.Unlock()
+            c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
+            c.Abort()
+            return
+        }
+        filtered = append(filtered, now)
+        rlStore[key] = filtered
+        rlMu.Unlock()
+
+        c.Next()
+    }
+}
+
 // setupRoutes 设置路由
 func (s *Server) setupRoutes() {
 	// API路由组
@@ -89,9 +124,8 @@ func (s *Server) setupRoutes() {
 		// 系统配置（无需认证，用于前端判断是否管理员模式/注册是否开启）
 		api.GET("/config", s.handleGetSystemConfig)
 
-		// 加密相关接口（无需认证）
-		api.GET("/crypto/public-key", s.cryptoHandler.HandleGetPublicKey)
-		api.POST("/crypto/decrypt", s.cryptoHandler.HandleDecryptSensitiveData)
+        // 加密相关接口（公钥无需认证，解密改为认证保护）
+        api.GET("/crypto/public-key", s.cryptoHandler.HandleGetPublicKey)
 
 		// 系统提示词模板管理（无需认证）
 		api.GET("/prompt-templates", s.handleGetPromptTemplates)
@@ -105,17 +139,20 @@ func (s *Server) setupRoutes() {
 		api.POST("/equity-history-batch", s.handleEquityHistoryBatch)
 		api.GET("/traders/:id/public-config", s.handleGetPublicTraderConfig)
 
-		// 认证相关路由（无需认证）
-		api.POST("/register", s.handleRegister)
-		api.POST("/login", s.handleLogin)
-		api.POST("/verify-otp", s.handleVerifyOTP)
-		api.POST("/complete-registration", s.handleCompleteRegistration)
+        // 认证相关路由（无需认证）并加入基础限流
+        api.POST("/register", rateLimitMiddleware(10, time.Minute), s.handleRegister)
+        api.POST("/login", rateLimitMiddleware(20, time.Minute), s.handleLogin)
+        api.POST("/verify-otp", rateLimitMiddleware(30, time.Minute), s.handleVerifyOTP)
+        api.POST("/complete-registration", rateLimitMiddleware(10, time.Minute), s.handleCompleteRegistration)
 
 		// 需要认证的路由
-		protected := api.Group("/", s.authMiddleware())
-		{
-			// 注销（加入黑名单）
-			protected.POST("/logout", s.handleLogout)
+        protected := api.Group("/", s.authMiddleware())
+        {
+            // 注销（加入黑名单）
+            protected.POST("/logout", s.handleLogout)
+
+            // 加密相关接口（需要认证）：对称解密端点 + 限流
+            protected.POST("/crypto/decrypt", rateLimitMiddleware(60, time.Minute), s.cryptoHandler.HandleDecryptSensitiveData)
 
 			// 服务器IP查询（需要认证，用于白名单配置）
 			protected.GET("/server-ip", s.handleGetServerIP)

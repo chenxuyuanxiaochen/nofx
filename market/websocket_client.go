@@ -1,13 +1,14 @@
 package market
 
 import (
-	"encoding/json"
-	"fmt"
-	"log"
-	"sync"
-	"time"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "sync"
+    "time"
 
-	"github.com/gorilla/websocket"
+    "github.com/gorilla/websocket"
 )
 
 type WSClient struct {
@@ -77,9 +78,11 @@ func NewWSClient() *WSClient {
 }
 
 func (w *WSClient) Connect() error {
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-	}
+    dialer := websocket.Dialer{
+        HandshakeTimeout: 10 * time.Second,
+        // 通过环境变量使用系统代理（HTTP_PROXY/HTTPS_PROXY/NO_PROXY）
+        Proxy:             http.ProxyFromEnvironment,
+    }
 
 	conn, _, err := dialer.Dial("wss://ws-fapi.binance.com/ws-fapi/v1", nil)
 	if err != nil {

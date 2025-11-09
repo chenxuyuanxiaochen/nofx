@@ -1,14 +1,15 @@
 package market
 
 import (
-	"encoding/json"
-	"fmt"
-	"log"
-	"strings"
-	"sync"
-	"time"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "strings"
+    "sync"
+    "time"
 
-	"github.com/gorilla/websocket"
+    "github.com/gorilla/websocket"
 )
 
 type CombinedStreamsClient struct {
@@ -30,12 +31,13 @@ func NewCombinedStreamsClient(batchSize int) *CombinedStreamsClient {
 }
 
 func (c *CombinedStreamsClient) Connect() error {
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-	}
+    dialer := websocket.Dialer{
+        HandshakeTimeout: 10 * time.Second,
+        Proxy:             http.ProxyFromEnvironment,
+    }
 
 	// 组合流使用不同的端点
-	conn, _, err := dialer.Dial("wss://fstream.binance.com/stream", nil)
+    conn, _, err := dialer.Dial("wss://fstream.binance.com/stream", nil)
 	if err != nil {
 		return fmt.Errorf("组合流WebSocket连接失败: %v", err)
 	}
